@@ -19,6 +19,13 @@ from opentelemetry.test_util_genai.conformance import (
 )
 
 from .conformance.inference import InferenceScenario
+from .conformance.inference_beta import (
+    InferenceBetaScenario,
+    InferenceBetaStreamingScenario,
+)
+from .conformance.inference_beta_server_tool_calling import (
+    InferenceBetaServerToolCallingScenario,
+)
 from .conformance.inference_raw_response import (
     InferenceRawResponseScenario,
     InferenceRawResponseStreamingScenario,
@@ -39,6 +46,9 @@ from .conformance.tool_calling import ToolCallingScenario
         InferenceRawResponseStreamingScenario(),
         ToolCallingScenario(),
         ServerToolCallingScenario(),
+        InferenceBetaScenario(),
+        InferenceBetaStreamingScenario(),
+        InferenceBetaServerToolCallingScenario(),
     ],
     ids=lambda s: type(s).__name__,
 )
