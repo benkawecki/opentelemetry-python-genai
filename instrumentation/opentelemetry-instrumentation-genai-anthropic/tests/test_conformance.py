@@ -21,7 +21,6 @@ from opentelemetry.test_util_genai.conformance import (
 from .conformance.inference import InferenceScenario
 from .conformance.inference_beta import (
     InferenceBetaScenario,
-    InferenceBetaStreamingScenario,
 )
 from .conformance.inference_beta_server_tool_calling import (
     InferenceBetaServerToolCallingScenario,
@@ -30,10 +29,18 @@ from .conformance.inference_raw_response import (
     InferenceRawResponseScenario,
     InferenceRawResponseStreamingScenario,
 )
+from .conformance.inference_raw_response_beta import (
+    InferenceBetaRawResponseScenario,
+    InferenceBetaRawResponseStreamingScenario,
+)
 from .conformance.inference_streaming import InferenceStreamingScenario
+from .conformance.inference_streaming_beta import (
+    InferenceBetaStreamingScenario,
+)
 from .conformance.multimodal import MultimodalScenario
 from .conformance.server_tool_calling import ServerToolCallingScenario
 from .conformance.tool_calling import ToolCallingScenario
+from .conformance.tool_calling_beta import ToolCallingBetaScenario
 
 
 @pytest.mark.parametrize(
@@ -49,6 +56,9 @@ from .conformance.tool_calling import ToolCallingScenario
         InferenceBetaScenario(),
         InferenceBetaStreamingScenario(),
         InferenceBetaServerToolCallingScenario(),
+        InferenceBetaRawResponseScenario(),
+        InferenceBetaRawResponseStreamingScenario(),
+        ToolCallingBetaScenario(),
     ],
     ids=lambda s: type(s).__name__,
 )

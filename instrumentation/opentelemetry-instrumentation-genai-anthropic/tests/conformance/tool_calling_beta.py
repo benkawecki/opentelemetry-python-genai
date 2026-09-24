@@ -1,7 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance scenario: anthropic beta chat (inference)."""
+"""Conformance scenario: anthropic beta chat with tool calls."""
 
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ from opentelemetry.instrumentation.genai.anthropic import AnthropicInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.test_util_genai.conformance import Scenario
+from opentelemetry.test_util_genai.conformance import (
+    Scenario,
+)
 from opentelemetry.test_util_genai.instrumentor import instrument
 
 
-class InferenceBetaScenario(Scenario):
+class ToolCallingBetaScenario(Scenario):
     expected_spans = {"chat": 1}
     expected_metrics = (
         "gen_ai.client.operation.duration",
@@ -47,14 +49,26 @@ class InferenceBetaScenario(Scenario):
                 meter_provider=meter_provider,
                 content_capture="SPAN_ONLY",
             ):
-                with vcr.use_cassette("inference_beta_conformance.yaml"):
+                with vcr.use_cassette("tool_calling_beta_conformance.yaml"):
                     Anthropic().beta.messages.create(
                         model="claude-sonnet-4-6",
-                        max_tokens=100,
+                        max_tokens=256,
                         messages=[
                             {
                                 "role": "user",
-                                "content": "Say hello in one word.",
+                                "content": "What is the weather in SF?",
                             }
                         ],
+                        tools=[
+                            {
+                                "name": "get_weather",
+                                "description": "Get weather by city",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"city": {"type": "string"}},
+                                    "required": ["city"],
+                                },
+                            }
+                        ],
+                        tool_choice={"type": "tool", "name": "get_weather"},
                     )
