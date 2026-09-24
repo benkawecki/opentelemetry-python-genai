@@ -104,7 +104,7 @@ class InferenceBetaRawResponseStreamingScenario(Scenario):
                     "test_sync_messages_beta_create_streaming_with_raw_response.yaml"
                 ):
                     raw_response = (
-                        Anthropic().messages.with_raw_response.create(
+                        Anthropic().beta.messages.with_raw_response.create(
                             model="claude-sonnet-4-6",
                             max_tokens=100,
                             messages=[
