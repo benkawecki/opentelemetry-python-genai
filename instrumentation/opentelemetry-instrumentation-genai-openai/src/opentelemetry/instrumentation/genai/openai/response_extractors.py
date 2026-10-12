@@ -74,6 +74,13 @@ try:
 except ImportError:
     ResponseCustomToolCall = None
 
+try:
+    from openai.types.responses.response_computer_tool_call import (
+        ResponseComputerToolCall,
+    )
+except ImportError:
+    ResponseComputerToolCall = None
+
 
 try:
     from opentelemetry.util.genai.types import (
@@ -128,6 +135,7 @@ class UsageTokens:
     cache_creation_input_tokens: int | None = None
     cache_read_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
+    thinking_tokens: int | None = None
 
 
 def _get_field(value: object, field_name: str) -> object | None:
@@ -269,8 +277,12 @@ _TOOL_CALL_ARGUMENT_FIELDS = {
     "function_call": "arguments",
     "custom_tool_call": "input",
 }
-_TOOL_OUTPUT_TYPES = frozenset(
-    {"function_call_output", "custom_tool_call_output"}
+_TOOL_OUTPUT_TYPES: frozenset[str] = frozenset(
+    {
+        "function_call_output",
+        "custom_tool_call_output",
+        "computer_call_output",
+    }
 )
 
 
@@ -295,6 +307,18 @@ def _get_input_message(item: object) -> InputMessage | None:
                         and isinstance(raw, str)
                         else _tool_response_to_data(raw)
                     ),
+                )
+            ],
+        )
+
+    if item_type == "computer_call" and ToolCall is not None:
+        return InputMessage(
+            role=Role.ASSISTANT.value,
+            parts=[
+                ToolCall(
+                    id=_get_call_id(item),
+                    name="computer",
+                    arguments=_computer_tool_arguments(item),
                 )
             ],
         )
@@ -403,7 +427,7 @@ def _extract_reasoning_parts(
     return parts
 
 
-_SERVER_TOOL_NAMES = {
+_SERVER_TOOL_NAMES: dict[str, str] = {
     "code_interpreter_call": "code_interpreter",
     "file_search_call": "file_search",
     "image_generation_call": "image_generation",
@@ -413,7 +437,7 @@ _SERVER_TOOL_NAMES = {
     "web_search_call": "web_search",
 }
 
-_SERVER_TOOL_RESPONSE_NAMES = {
+_SERVER_TOOL_RESPONSE_NAMES: dict[str, str] = {
     "tool_search_output": "tool_search",
 }
 
@@ -571,9 +595,13 @@ def get_tool_definitions_from_response(
 
 
 # Empty when the SDK predates these types, which makes every check below False.
-_TOOL_CALL_MODELS = tuple(
+_TOOL_CALL_MODELS: tuple[type[object], ...] = tuple(
     model
-    for model in (ResponseFunctionToolCall, ResponseCustomToolCall)
+    for model in (
+        ResponseFunctionToolCall,
+        ResponseCustomToolCall,
+        ResponseComputerToolCall,
+    )
     if model is not None
 )
 
@@ -584,11 +612,24 @@ def _is_tool_call_item(item: object) -> bool:
 
 
 def _tool_call_arguments(item: object) -> object:
-    """A function's ``arguments`` is a JSON string; a custom tool's ``input`` is text."""
+    """Return arguments in the GenAI shape used for tool calls."""
+    if getattr(item, "type", None) == "computer_call":
+        return _computer_tool_arguments(item)
     arguments = getattr(item, "arguments", None)
     if isinstance(arguments, str):
         return _parse_tool_call_arguments(arguments)
     return _tool_response_to_data(getattr(item, "input", None))
+
+
+def _computer_tool_arguments(item: object) -> dict[str, object]:
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        item = model_dump(exclude_none=True, mode="json")
+    return {
+        field_name: _tool_response_to_data(value)
+        for field_name in ("action", "actions")
+        if (value := _get_field(item, field_name)) is not None
+    }
 
 
 _TERMINAL_TOOL_CALL_STATUSES = frozenset({"completed", "incomplete"})
@@ -665,7 +706,9 @@ def get_output_messages_from_response(
 
             part = ToolCall(
                 id=item.call_id if item.call_id else item.id,
-                name=item.name,
+                name=(
+                    "computer" if item.type == "computer_call" else item.name
+                ),
                 arguments=_tool_call_arguments(item),
             )
             if messages and _absorbs_tool_call(messages[-1]):
@@ -782,6 +825,8 @@ def get_inference_creation_kwargs(
         creation_kwargs["server_address"] = address
     if port is not None:
         creation_kwargs["server_port"] = port
+    if params.conversation_id is not None:
+        creation_kwargs["conversation_id"] = params.conversation_id
     return creation_kwargs
 
 
@@ -811,7 +856,6 @@ def apply_request_attributes(
     invocation.attributes[OpenAIAttributes.OPENAI_API_TYPE] = (
         OpenAIAttributes.OpenaiApiTypeValues.RESPONSES.value
     )
-    invocation.conversation_id = params.conversation_id
     invocation.temperature = params.temperature
     invocation.top_p = params.top_p
     invocation.max_tokens = params.max_output_tokens
@@ -865,6 +909,9 @@ def extract_usage_tokens(usage: ResponseUsage | None) -> UsageTokens:
             getattr(details, "cached_tokens", None)
             if details is not None
             else None
+        ),
+        thinking_tokens=getattr(
+            usage.output_tokens_details, "reasoning_tokens", None
         ),
     )
 
@@ -925,6 +972,7 @@ def set_invocation_response_attributes(
     invocation.output_tokens = tokens.output_tokens
     invocation.cache_write_input_tokens = tokens.cache_write_input_tokens
     invocation.cache_read_input_tokens = tokens.cache_read_input_tokens
+    invocation.thinking_tokens = tokens.thinking_tokens
 
     finish_reasons = extract_finish_reasons(response)
     if finish_reasons:

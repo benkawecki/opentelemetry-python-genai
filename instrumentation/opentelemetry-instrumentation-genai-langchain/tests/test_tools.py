@@ -439,6 +439,48 @@ def test_on_tool_start_and_end_creates_span(monkeypatch):
     )
 
 
+def test_on_tool_start_parents_to_parent_run_context():
+    tracer_provider, span_exporter, logger_provider, meter_provider = (
+        _make_providers()
+    )
+    handler = _make_callback_handler(
+        tracer_provider, logger_provider, meter_provider
+    )
+
+    parent_id = uuid4()
+    child_id = uuid4()
+
+    handler.on_chain_start(
+        serialized={"name": "LangGraph"},
+        inputs={},
+        run_id=parent_id,
+        parent_run_id=None,
+    )
+    tracer = tracer_provider.get_tracer(__name__)
+    with tracer.start_as_current_span("ambient") as ambient_span:
+        handler.on_tool_start(
+            serialized={"name": "multiply"},
+            input_str="",
+            run_id=child_id,
+            parent_run_id=parent_id,
+            inputs={"a": 3, "b": 4},
+        )
+    output = MagicMock()
+    output.content = "12"
+    handler.on_tool_end(output=output, run_id=child_id)
+    handler.on_chain_end(outputs={}, run_id=parent_id)
+
+    spans = span_exporter.get_finished_spans()
+    tool_span = next(s for s in spans if s.name == "execute_tool multiply")
+    workflow_span = next(
+        s for s in spans if s.name == "invoke_workflow LangGraph"
+    )
+    assert tool_span.parent is not None
+    assert tool_span.parent.span_id == workflow_span.context.span_id
+    assert tool_span.parent.span_id != ambient_span.get_span_context().span_id
+    assert tool_span.context.trace_id == workflow_span.context.trace_id
+
+
 def test_on_tool_start_omits_conversation_id():
     """semconv does not define gen_ai.conversation.id for execute_tool."""
     tracer_provider, span_exporter, logger_provider, meter_provider = (
@@ -1130,6 +1172,56 @@ def test_on_tool_end_captures_result_with_span_only_mode(monkeypatch):
     assert len(spans) == 1
     attrs = spans[0].attributes
     assert attrs[gen_ai_attributes.GEN_AI_TOOL_CALL_RESULT] == "result text"
+
+
+@pytest.mark.parametrize(
+    "tool_input, expected_result",
+    [
+        # Without a tool_call_id LangChain passes the raw return value.
+        ({"city": "Paris"}, '{"temp":20}'),
+        # With one, it wraps the result in a ToolMessage.
+        (
+            {
+                "name": "weather",
+                "args": {"city": "Paris"},
+                "id": "call_1",
+                "type": "tool_call",
+            },
+            '{"temp": 20}',
+        ),
+    ],
+)
+def test_tool_result_captured_with_and_without_tool_call_id(
+    monkeypatch, tool_input: dict[str, Any], expected_result: str
+):
+    monkeypatch.setenv(
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY"
+    )
+    tracer_provider, span_exporter, logger_provider, meter_provider = (
+        _make_providers()
+    )
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        logger_provider=logger_provider,
+    )
+    try:
+
+        @tool
+        def weather(city: str) -> dict[str, int]:
+            """Get the weather."""
+            return {"temp": 20}
+
+        weather.invoke(tool_input)
+
+        (span,) = span_exporter.get_finished_spans()
+        assert (
+            span.attributes[gen_ai_attributes.GEN_AI_TOOL_CALL_RESULT]
+            == expected_result
+        )
+    finally:
+        instrumentor.uninstrument()
 
 
 # ---------------------------------------------------------------------------
