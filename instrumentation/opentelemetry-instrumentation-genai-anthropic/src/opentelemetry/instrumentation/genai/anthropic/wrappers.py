@@ -29,7 +29,12 @@ from opentelemetry.util.genai.stream import (
     finalize_on_close,
 )
 
-from .messages_extractors import set_invocation_response_attributes
+from .messages_extractors import (
+    get_input_messages,
+    get_system_instruction,
+    get_tool_definitions,
+    set_invocation_response_attributes,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -79,6 +84,7 @@ if TYPE_CHECKING:
     from anthropic.types.parsed_message import ParsedMessage
 
     from opentelemetry.util.genai.invocation import InferenceInvocation
+    from opentelemetry.util.genai.iterator_capture import IteratorCapture
 
 
 ResponseFormatT = TypeVar("ResponseFormatT")
@@ -433,11 +439,35 @@ class MessagesStreamManagerWrapper(
         ),
         invocation_factory: Callable[[], InferenceInvocation],
         capture_content: bool,
+        *,
+        messages_capture: IteratorCapture,
+        system_capture: IteratorCapture,
+        tools_capture: IteratorCapture,
         is_beta: bool = False,
     ):
         super().__init__(manager, invocation_factory)
         self._self_capture_content = capture_content
+        self._self_capture_content = capture_content
         self._self_is_beta = is_beta
+        self._self_messages_capture = messages_capture
+        self._self_system_capture = system_capture
+        self._self_tools_capture = tools_capture
+
+    def _enter_manager(
+        self, invocation: InferenceInvocation
+    ) -> MessageStream[ResponseFormatT]:
+        try:
+            return super()._enter_manager(invocation)
+        finally:
+            invocation.input_messages = (
+                self._self_messages_capture.extract(get_input_messages) or []
+            )
+            invocation.system_instruction = (
+                self._self_system_capture.extract(get_system_instruction) or []
+            )
+            invocation.tool_definitions = self._self_tools_capture.extract(
+                get_tool_definitions
+            )
 
     def _wrap_stream(
         self,
@@ -476,11 +506,34 @@ class AsyncMessagesStreamManagerWrapper(
         ),
         invocation_factory: Callable[[], InferenceInvocation],
         capture_content: bool,
+        *,
+        messages_capture: IteratorCapture,
+        system_capture: IteratorCapture,
+        tools_capture: IteratorCapture,
         is_beta: bool = False,
     ):
         super().__init__(manager, invocation_factory)
         self._self_capture_content = capture_content
         self._self_is_beta = is_beta
+        self._self_messages_capture = messages_capture
+        self._self_system_capture = system_capture
+        self._self_tools_capture = tools_capture
+
+    async def _enter_manager(
+        self, invocation: InferenceInvocation
+    ) -> AsyncMessageStream[ResponseFormatT]:
+        try:
+            return await super()._enter_manager(invocation)
+        finally:
+            invocation.input_messages = (
+                self._self_messages_capture.extract(get_input_messages) or []
+            )
+            invocation.system_instruction = (
+                self._self_system_capture.extract(get_system_instruction) or []
+            )
+            invocation.tool_definitions = self._self_tools_capture.extract(
+                get_tool_definitions
+            )
 
     def _wrap_stream(
         self,
