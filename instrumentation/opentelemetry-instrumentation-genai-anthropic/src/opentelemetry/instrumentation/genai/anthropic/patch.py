@@ -352,7 +352,6 @@ def messages_stream(
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> MessagesStreamManagerWrapper[Any]:
-        _materialize_tools(kwargs)
         is_beta = _is_beta_resource(instance)
         messages_capture = IteratorCapture.from_property(
             kwargs, "messages", capture_content
@@ -394,7 +393,6 @@ def async_messages_stream(
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> AsyncMessagesStreamManagerWrapper[Any]:
-        _materialize_tools(kwargs)
         is_beta = _is_beta_resource(instance)
         messages_capture = IteratorCapture.from_property(
             kwargs, "messages", capture_content
