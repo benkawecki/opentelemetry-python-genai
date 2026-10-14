@@ -447,7 +447,6 @@ class MessagesStreamManagerWrapper(
     ):
         super().__init__(manager, invocation_factory)
         self._self_capture_content = capture_content
-        self._self_capture_content = capture_content
         self._self_is_beta = is_beta
         self._self_messages_capture = messages_capture
         self._self_system_capture = system_capture
@@ -455,7 +454,7 @@ class MessagesStreamManagerWrapper(
 
     def _enter_manager(
         self, invocation: InferenceInvocation
-    ) -> MessageStream[ResponseFormatT]:
+    ) -> MessageStream[ResponseFormatT] | BetaMessageStream[ResponseFormatT]:
         try:
             return super()._enter_manager(invocation)
         finally:
@@ -521,7 +520,10 @@ class AsyncMessagesStreamManagerWrapper(
 
     async def _enter_manager(
         self, invocation: InferenceInvocation
-    ) -> AsyncMessageStream[ResponseFormatT]:
+    ) -> (
+        AsyncMessageStream[ResponseFormatT]
+        | BetaAsyncMessageStream[ResponseFormatT]
+    ):
         try:
             return await super()._enter_manager(invocation)
         finally:
