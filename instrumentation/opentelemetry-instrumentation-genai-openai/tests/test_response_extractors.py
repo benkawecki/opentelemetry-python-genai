@@ -24,6 +24,7 @@ from opentelemetry.util.genai.types import (
     FunctionToolDefinition,
     GenericToolDefinition,
     LLMInvocation,
+    ReasoningPart,
     ServerToolCallPart,
     ServerToolCallResponsePart,
     TextPart,
@@ -145,10 +146,15 @@ _supports_computer_tool_actions: bool = _response_accepts_output_item(
 
 
 class _RawResponse:
+    """A ``with_raw_response`` result: raw body plus a ``parse()`` tripwire."""
+
     def __init__(self, parsed_response):
         self.headers = {"x-ms-served-model": "served-gpt-4.1"}
         self.parsed_response = parsed_response
         self.parse_count = 0
+        self.http_response = SimpleNamespace(
+            content=parsed_response.model_dump_json().encode("utf-8")
+        )
 
     def parse(self):
         self.parse_count += 1
@@ -728,6 +734,163 @@ def test_extract_input_messages_without_tool_part_types(loaded_module):
         mock.patch.object(loaded_module, "ToolCallResponsePart", None),
     ):
         assert loaded_module.get_input_messages(tool_items) == []
+
+
+def test_extract_input_messages_maps_reasoning_dict_with_summary(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Thought step"}],
+                "content": None,
+            }
+        ]
+    )
+
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert len(messages[0].parts) == 1
+    part = messages[0].parts[0]
+    assert isinstance(part, ReasoningPart)
+    assert part.type == "reasoning"
+    assert part.content == "Thought step"
+
+
+def test_extract_input_messages_maps_reasoning_dict_with_content(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [],
+                "content": [
+                    {"type": "reasoning_text", "text": "Deep thought"}
+                ],
+            }
+        ]
+    )
+
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert len(messages[0].parts) == 1
+    part = messages[0].parts[0]
+    assert isinstance(part, ReasoningPart)
+    assert part.type == "reasoning"
+    assert part.content == "Deep thought"
+
+
+def test_extract_input_messages_skips_empty_reasoning(loaded_module):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [],
+                "content": [],
+                "encrypted_content": "gAAAAABqnmzMN9RqmH9jGxjmoJdoO3La",
+            }
+        ]
+    )
+
+    assert messages == []
+
+
+def test_extract_input_messages_maps_reasoning_sdk_model(loaded_module):
+    if loaded_module.ResponseReasoningItem is None:
+        pytest.skip("openai SDK too old to support ResponseReasoningItem")
+
+    item = loaded_module.ResponseReasoningItem.model_validate(
+        {
+            "id": "rs_1",
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "SDK thought"}],
+            "content": [
+                {"type": "reasoning_text", "text": "SDK deep thought"}
+            ],
+            "status": "completed",
+        }
+    )
+    messages = loaded_module.get_input_messages([item])
+
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert len(messages[0].parts) == 2
+    assert isinstance(messages[0].parts[0], ReasoningPart)
+    assert messages[0].parts[0].content == "SDK thought"
+    assert isinstance(messages[0].parts[1], ReasoningPart)
+    assert messages[0].parts[1].content == "SDK deep thought"
+
+
+def test_extract_input_messages_reasoning_not_merged_with_tool_calls(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "f1",
+                "arguments": "{}",
+            },
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Planning..."}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "f2",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert len(messages) == 3
+    assert [m.role for m in messages] == [
+        "assistant",
+        "assistant",
+        "assistant",
+    ]
+    assert messages[0].parts[0].type == "tool_call"
+    assert messages[1].parts[0].type == "reasoning"
+    assert messages[1].parts[0].content == "Planning..."
+    assert messages[2].parts[0].type == "tool_call"
+
+
+def test_extract_input_messages_reasoning_before_parallel_tool_calls(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Planning..."}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "f1",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "f2",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert [m.role for m in messages] == ["assistant", "assistant"]
+    assert [p.type for p in messages[0].parts] == ["reasoning"]
+    assert [p.id for p in messages[1].parts] == ["call_1", "call_2"]
 
 
 def test_extract_output_messages_maps_parts_and_finish_reasons(loaded_module):
@@ -1319,13 +1482,14 @@ def test_get_response_error_parses_raw_response(loaded_module):
         status="failed",
         error={"code": "server_error", "message": "boom"},
     )
-    raw_response = SimpleNamespace(parse=mock.Mock(return_value=response))
+    raw_response = _RawResponse(response)
 
     error = loaded_module.get_response_error(raw_response)
 
     assert error is not None
     assert error.type == "server_error"
-    raw_response.parse.assert_called_once_with()
+    assert error.message == "boom"
+    assert raw_response.parse_count == 0
 
 
 def test_get_response_error_keeps_streaming_raw_response_lazy(loaded_module):
@@ -1388,6 +1552,29 @@ def test_extract_output_type_handles_text_format_mapping(loaded_module):
         is None
     )
     assert loaded_module.extract_params(text="plain").output_type is None
+
+
+def test_extract_params_output_type_from_text_format(loaded_module):
+    class _Event(BaseModel):
+        name: str
+
+    assert (
+        loaded_module.extract_params(text_format=_Event).output_type == "json"
+    )
+    assert (
+        loaded_module.extract_params(text_format=_Event(name="x")).output_type
+        is None
+    )
+    assert loaded_module.extract_params(text_format=None).output_type is None
+    assert (
+        loaded_module.extract_params(text_format="Event").output_type is None
+    )
+    assert (
+        loaded_module.extract_params(
+            text={"format": {"type": "text"}}, text_format=_Event
+        ).output_type
+        == "text"
+    )
 
 
 def test_extract_conversation_id_handles_supported_shapes(loaded_module):
@@ -1550,7 +1737,7 @@ def test_set_invocation_response_attributes_prefers_raw_served_model_header(
         invocation, raw_response, capture_content=False
     )
 
-    assert raw_response.parse_count == 1
+    assert raw_response.parse_count == 0
     assert invocation.response_model_name == "served-gpt-4.1"
 
 
@@ -1567,7 +1754,7 @@ def test_set_invocation_response_attributes_falls_back_to_body_model_when_header
         invocation, raw_response, capture_content=False
     )
 
-    assert raw_response.parse_count == 1
+    assert raw_response.parse_count == 0
     assert invocation.response_model_name == "deployment-gpt-4.1"
 
 
@@ -1584,7 +1771,7 @@ def test_set_invocation_response_attributes_falls_back_to_body_model_when_header
         invocation, raw_response, capture_content=False
     )
 
-    assert raw_response.parse_count == 1
+    assert raw_response.parse_count == 0
     assert invocation.response_model_name == "deployment-gpt-4.1"
 
 
@@ -1962,7 +2149,7 @@ def test_set_fetch_response_attributes_prefers_raw_served_model_header(
         invocation, raw_response, capture_content=False
     )
 
-    assert raw_response.parse_count == 1
+    assert raw_response.parse_count == 0
     assert invocation.response_model_name == "served-gpt-4.1"
 
 
